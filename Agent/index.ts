@@ -382,13 +382,72 @@ export class Agent {
         console.error("[agent] Search popup wait failed:", err instanceof Error ? err.message : String(err))
       }
 
-      console.log("[agent] Clicking first movie result...")
+      console.log("[agent] Clicking best movie result...")
+      let resultClicked = false
       try {
-        await this.browser.click("#searchResultsV2 > div:first-child")
-        await this.browser.wait("time", "5")
-        console.log("[agent] Movie result clicked")
+        // Prefer a search result that links to a real movie page (/movies/... or an ET-code movie),
+        // else a result whose text matches the searched movie name; fall back to first child.
+        const pick = await this.browser.eval<string>(`
+          (function() {
+            var query = ${sq(input.movie)};
+            var containers = ["#searchResultsV2", "#searchResultsDropdown", "div[id*='searchResult']"];
+            var root = null;
+            for (var i = 0; i < containers.length; i++) {
+              root = document.querySelector(containers[i]);
+              if (root) break;
+            }
+            var anchors = [];
+            if (root) anchors = Array.from(root.querySelectorAll('a[href]'));
+            if (anchors.length === 0) {
+              anchors = Array.from(document.querySelectorAll('[class*="suggestion"] a[href], [class*="search-result"] a[href], [class*="auto-suggest"] a[href]'));
+            }
+            if (anchors.length === 0) {
+              anchors = Array.from(document.querySelectorAll('a[href]'));
+            }
+            var bestMovie = null;
+            var bestQuery = null;
+            for (var j = 0; j < anchors.length; j++) {
+              var a = anchors[j];
+              if (!a.offsetHeight && !a.offsetWidth) continue;
+              var h = a.getAttribute('href') || '';
+              var t = (a.textContent || '').trim().replace(/\\s+/g, ' ');
+              if (!bestMovie && (/\\/movies\\//.test(h) || /\\/movie\\-/.test(h) || /ET\\d{6,}/.test(h))) {
+                bestMovie = a;
+              }
+              if (query && !bestQuery) {
+                var q = query.toLowerCase();
+                if (t.toLowerCase().indexOf(q) !== -1 || h.toLowerCase().indexOf(q) !== -1) {
+                  bestQuery = a;
+                }
+              }
+            }
+            var target = bestMovie || bestQuery || anchors[0] || null;
+            if (!target) return 'nf';
+            target.setAttribute('data-atlas-pick', '1');
+            if (target.scrollIntoView) target.scrollIntoView({behavior:'instant',block:'center'});
+            return 'picked:' + (target.getAttribute('href') || '') + ':' + (target.textContent || '').trim().slice(0, 40);
+          })()
+        `)
+        if (typeof pick === "string" && pick.startsWith("picked:")) {
+          console.log(`[agent] Result chosen: ${pick.slice(7)}`)
+          await this.browser.click("li[data-atlas-pick], a[data-atlas-pick], [data-atlas-pick]")
+          await this.browser.eval(`(function(){ try { var e = document.querySelector('[data-atlas-pick]'); if (e) e.removeAttribute('data-atlas-pick'); } catch(err){} })()`)
+          await this.browser.wait("time", "5")
+          console.log("[agent] Movie result clicked")
+          resultClicked = true
+        }
       } catch (err) {
-        console.error("[agent] Click on movie result failed:", err instanceof Error ? err.message : String(err))
+        console.error("[agent] movie-result pick failed:", err instanceof Error ? err.message : String(err))
+      }
+
+      if (!resultClicked) {
+        try {
+          await this.browser.click("#searchResultsV2 > div:first-child")
+          await this.browser.wait("time", "5")
+          console.log("[agent] Movie result clicked (first-child fallback)")
+        } catch (err) {
+          console.error("[agent] Click on movie result failed:", err instanceof Error ? err.message : String(err))
+        }
       }
 
       await this.browser.wait("time", "3")

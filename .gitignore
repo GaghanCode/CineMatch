@@ -30,6 +30,12 @@ yarn-debug.log*
 yarn-error.log*
 .pnpm-debug.log*
 
+# dev output logs (may contain scraped / transient data)
+dev-err.txt
+dev-out.txt
+dev-error.txt
+dev-output.txt
+
 # env files (can opt-in for committing if needed)
 .env*
 

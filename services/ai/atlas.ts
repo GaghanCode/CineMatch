@@ -294,15 +294,160 @@ export function generateReadyMessage(): string {
   )
 }
 
-export async function analyzeIntent(
+// ---------------------------------------------------------------------------
+// Rule-based fallback intent extractor
+// Used when the AI API is unavailable or rate-limited.
+// ---------------------------------------------------------------------------
+function extractIntentRuleBased(
   text: string,
   currentIntent?: BookingIntent,
-): Promise<AtlasResponse> {
+): BookingIntent {
+  const lower = text.toLowerCase()
+
+  // --- intentType ---
+  let intentType: BookingIntent["intentType"] = currentIntent?.intentType ?? "book"
+  if (/\b(recommend|suggest|what.*watch|best movie)\b/.test(lower)) intentType = "recommend"
+  else if (/\b(compare|versus|vs\.?|which is better)\b/.test(lower)) intentType = "compare"
+  else if (/\b(date night|romantic|anniversary|couple)\b/.test(lower)) intentType = "dateNight"
+  else if (/\b(cheap|cheapest|budget|affordable|lowest price)\b/.test(lower)) intentType = "cheapest"
+  else if (/\b(surprise|anything|random|don.t care)\b/.test(lower)) intentType = "surprise"
+  else if (/\b(book|ticket|tickets|reserve|buy|purchase)\b/.test(lower)) intentType = "book"
+
+  const result: Record<string, unknown> = {
+    intentType,
+    missingFields: [],
+    confidence: 0.6,
+  }
+
+  // --- city (declared first so STOP_WORDS can reference it) ---
+  const CITIES = [
+    "Bangalore", "Bengaluru", "Mumbai", "Delhi", "Hyderabad",
+    "Chennai", "Pune", "Kolkata", "Ahmedabad", "Jaipur",
+  ]
+
+  // --- movie ---
+  // Extract movie name case-insensitively, then strip trailing stop-words.
+  const STOP_WORDS = new Set([
+    "in", "at", "on", "for", "to", "the", "a", "an", "with",
+    "tomorrow", "today", "tonight", "morning", "afternoon", "evening", "night",
+    "tickets", "ticket", "show", "movie", "film", "booking",
+    "imax", "3d", "4dx", "dolby", "standard", "hindi", "english",
+    "tamil", "telugu", "kannada", "malayalam",
+    ...CITIES.map((c) => c.toLowerCase()),
+  ])
+
+  function cleanMovieName(raw: string): string {
+    const words = raw.trim().split(/\s+/)
+    while (words.length > 0 && STOP_WORDS.has(words[words.length - 1].toLowerCase())) {
+      words.pop()
+    }
+    return words.join(" ").trim()
+  }
+
+  // Pattern 1: verb + movie name, stop at preposition/date/time word
+  const p1 = text.match(
+    /(?:book|watch|see|get\s+tickets?\s+for|tickets?\s+for)\s+(.+?)(?:\s+(?:in|at|on|for|tomorrow|today|tonight|this weekend|saturday|sunday|morning|afternoon|evening|night|tickets?)|\s*$)/i,
+  )
+  // Pattern 2: "<movie> tickets"
+  const p2 = text.match(/^(.+?)\s+tickets?\b/i)
+
+  let rawMovie = p1?.[1] ?? p2?.[1] ?? ""
+
+  // Fallback: everything before a city or date keyword
+  if (!rawMovie) {
+    const boundary = /\b(?:in|at|for|tomorrow|today|tonight|this weekend|saturday|sunday|morning|afternoon|evening|night|\d+\s+ticket)/i
+    const idx = lower.search(boundary)
+    if (idx > 2) rawMovie = text.slice(0, idx)
+  }
+
+  const cleanedMovie = cleanMovieName(rawMovie)
+  if (cleanedMovie.length >= 2) {
+    result.movie = cleanedMovie
+      .split(" ")
+      .map((w) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
+      .join(" ")
+  }
+
+  for (const city of CITIES) {
+    if (lower.includes(city.toLowerCase())) {
+      result.city = city === "Bengaluru" ? "Bangalore" : city
+      break
+    }
+  }
+
+  // --- date ---
+  if (/\btoday\b/.test(lower)) result.date = "today"
+  else if (/\btomorrow\b/.test(lower)) result.date = "tomorrow"
+  else if (/\bday after tomorrow\b/.test(lower)) result.date = "day after tomorrow"
+  else if (/\bthis weekend\b/.test(lower)) result.date = "this weekend"
+  else if (/\bsaturday\b/.test(lower)) result.date = "saturday"
+  else if (/\bsunday\b/.test(lower)) result.date = "sunday"
+
+  // --- time ---
+  if (/\bmorning\b/.test(lower)) result.time = "morning"
+  else if (/\bafternoon\b/.test(lower)) result.time = "afternoon"
+  else if (/\bevening\b|\btonight\b/.test(lower)) result.time = "evening"
+  else if (/\bnight\b/.test(lower)) result.time = "night"
+  // explicit HH:MM or "8 pm" style
+  const timeMatch = text.match(/\b(\d{1,2}(?::\d{2})?\s*(?:am|pm))\b/i)
+  if (timeMatch) result.time = timeMatch[1].toLowerCase()
+
+  // --- tickets ---
+  const ticketWords: Record<string, number> = {
+    one: 1, single: 1, two: 2, couple: 2, three: 3, four: 4, five: 5,
+  }
+  const ticketNumMatch = text.match(/\b(\d+)\s+tickets?\b/i)
+  if (ticketNumMatch) {
+    result.tickets = parseInt(ticketNumMatch[1], 10)
+  } else {
+    for (const [word, count] of Object.entries(ticketWords)) {
+      if (new RegExp(`\\b${word}\\b`).test(lower)) {
+        result.tickets = count
+        break
+      }
+    }
+  }
+  // date night → 2 tickets implied
+  if (!result.tickets && intentType === "dateNight") result.tickets = 2
+
+  // --- budget ---
+  const budgetMatch = text.match(/(?:₹|rs\.?|inr)?\s*(\d+)\s*(?:rupees?|rs\.?)?/i)
+  if (budgetMatch && (lower.includes("budget") || lower.includes("under") || lower.includes("below") || lower.includes("₹"))) {
+    const num = parseInt(budgetMatch[1], 10)
+    if (num > 0) result.budget = num
+  }
+
+  // --- screenType ---
+  if (/\bimax\b/.test(lower)) result.screenType = "IMAX"
+  else if (/\b4dx\b/.test(lower)) result.screenType = "4DX"
+  else if (/\b3d\b/.test(lower)) result.screenType = "3D"
+  else if (/\bdolby\b/.test(lower)) result.screenType = "Dolby Cinema"
+  else if (/\bstandard\b/.test(lower)) result.screenType = "Standard"
+
+  // --- language ---
+  const LANGUAGES = ["Hindi", "English", "Tamil", "Telugu", "Kannada", "Malayalam"]
+  for (const lang of LANGUAGES) {
+    if (lower.includes(lang.toLowerCase())) {
+      result.language = lang
+      break
+    }
+  }
+
+  // --- seatPreference ---
+  if (/\bpremium|gold|recliner|vip\b/.test(lower)) result.seatPreference = "premium"
+  else if (/\bstandard|regular|normal|cheap\b/.test(lower)) result.seatPreference = "standard"
+  else if (/\bbalcony\b/.test(lower)) result.seatPreference = "balcony"
+
+  // Merge with existing intent, let new values override
+  const merged = mergeIntents(currentIntent, result as Partial<BookingIntent>)
+  const normalized = normalizeBookingIntent(merged as unknown as Record<string, unknown>)
+  return normalized
+}
+
+async function callAI(userMessage: string): Promise<Record<string, unknown>> {
   if (!process.env.OPENCODE_ZEN_API_KEY) {
     throw new Error("OPENCODE_ZEN_API_KEY is not set")
   }
-
-  const userMessage = buildPrompt(text, currentIntent)
 
   const response = await fetch("https://opencode.ai/zen/v1/chat/completions", {
     method: "POST",
@@ -323,37 +468,51 @@ export async function analyzeIntent(
 
   if (!response.ok) {
     const errorText = await response.text()
-    console.error("[atlas] API error:", response.status, errorText)
-    throw new Error("I couldn't process that request. Please try again.")
+    console.error(`[atlas] AI API error ${response.status}:`, errorText)
+    throw new Error(`API responded with status ${response.status}`)
   }
 
   const data = await response.json()
   const outputText = data?.choices?.[0]?.message?.content
 
   if (!outputText) {
-    throw new Error("I didn't get a valid response. Please try again.")
+    throw new Error("Empty response from AI API")
   }
 
-  let parsed: Record<string, unknown>
   try {
-    parsed = JSON.parse(outputText)
+    return JSON.parse(outputText)
   } catch {
     console.error("[atlas] JSON parse error. Raw:", outputText)
-    throw new Error("I couldn't fully understand that request. Could you try rephrasing it?")
+    throw new Error("Could not parse AI response as JSON")
+  }
+}
+
+export async function analyzeIntent(
+  text: string,
+  currentIntent?: BookingIntent,
+): Promise<AtlasResponse> {
+  let intent: BookingIntent
+
+  try {
+    // Attempt AI-powered extraction
+    const userMessage = buildPrompt(text, currentIntent)
+    const parsed = await callAI(userMessage)
+    const normalized = normalizeBookingIntent(parsed)
+    const merged = mergeIntents(currentIntent, normalized)
+
+    const result = BookingIntentSchema.safeParse(merged)
+    if (!result.success) {
+      console.warn("[atlas] Zod validation failed, falling back to rule-based. Errors:", result.error.format())
+      intent = extractIntentRuleBased(text, currentIntent)
+    } else {
+      intent = result.data
+    }
+  } catch (err) {
+    // AI unavailable (rate limit, network, etc.) — fall back silently
+    console.warn("[atlas] AI unavailable, using rule-based fallback:", err instanceof Error ? err.message : err)
+    intent = extractIntentRuleBased(text, currentIntent)
   }
 
-  const normalized = normalizeBookingIntent(parsed)
-  const merged = mergeIntents(currentIntent, normalized)
-
-  const result = BookingIntentSchema.safeParse(merged)
-  if (!result.success) {
-    console.error("[atlas] Zod validation failed. Parsed:", JSON.stringify(parsed))
-    console.error("[atlas] Normalized:", JSON.stringify(normalized))
-    console.error("[atlas] Zod errors:", result.error.format())
-    throw new Error("I couldn't fully understand that request. Could you try rephrasing it?")
-  }
-
-  const intent = result.data
   const missing = calculateMissingFields(intent)
   intent.missingFields = missing
   const shouldAskUser = missing.length > 0
