@@ -1,36 +1,61 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# CineMatch — Autonomous Movie Booking
+
+One command is all CineMatch needs. It understands your intent, compares theatres, and prepares your booking — you pick your seats and finish the payment.
+
+## Features
+
+- **Natural-language intent parsing** — "book 2 tickets for tomorrow night" → movie, city, date, time, tickets, screen, language, budget.
+- **Autonomous browser agent** — searches BookMyShow, selects the right movie, lists theatres by price & distance, opens the showtime and seat map, then proceeds through to the payment page.
+- **Streamed progress (SSE)** — step-by-step live updates, theatre cards, reasoning timeline, seat map.
+- **Optional voice input** and geolocation-based city detection.
+
+## Tech
+
+Next.js 16 · React 19 · TypeScript · Tailwind CSS v4 · TanStack Query · `webcmd` headless browser · SSE
 
 ## Getting Started
 
-First, run the development server:
-
 ```bash
+npm install
+cp .env.example .env.local   # add your API key
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Open [http://localhost:3000](http://localhost:3000) and type a request like *"book 2 tickets for tomorrow"*.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+### Environment
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+```env
+OPENCODE_ZEN_API_KEY=your_api_key_here   # AI intent parser (fallback works without it)
+DEBUG_WEBCMD=true                        # optional verbose agent logs
+```
 
-## Learn More
+## Scripts
 
-To learn more about Next.js, take a look at the following resources:
+| Command | Description |
+| --- | --- |
+| `npm run dev` | Dev server (Turbopack) |
+| `npm run build` | Production build |
+| `npm run start` | Serve production build |
+| `npm run lint` | Lint |
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+## Structure
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+```
+app/            pages, layout, api routes (intent + agent SSE)
+Agent/          autonomous booking agent (browser, extractor, planner, ranking)
+services/ai/    intent analyzer, geolocation, theatre logic
+components/     landing, workspace, thinking, ui
+```
 
-## Deploy on Vercel
+## How It Works
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+1. You type a booking request.
+2. Intent is parsed into a structured booking.
+3. The agent drives BookMyShow via a headless browser to list and pick a theatre & showtime.
+4. You select seats on the live page.
+5. The agent proceeds through checkout and stops at payment — you finish the payment.
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+## Note
+
+Booking automates a live third-party site (BookMyShow), so robustness depends on its page structure. The agent prefers real movie results and falls back gracefully if a step is missed.

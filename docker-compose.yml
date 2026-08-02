@@ -1,0 +1,9 @@
+services:
+  cinematch:
+    build: .
+    image: cinematch
+    ports:
+      - "3000:3000"
+    environment:
+      - OPENCODE_ZEN_API_KEY=${OPENCODE_ZEN_API_KEY:?set OPENCODE_ZEN_API_KEY in your .env or shell}
+    restart: unless-stopped

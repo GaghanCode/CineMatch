@@ -1,6 +1,9 @@
 import { Agent } from "@/Agent"
 import type { AgentInput } from "@/Agent"
 
+const BROKER_URL = process.env.AGENT_BROKER_URL || ""
+const BROKER_AUTH = process.env.BROKER_AUTH_TOKEN || ""
+
 export async function POST(req: Request) {
   const body = await req.json()
   const input: AgentInput = {
@@ -22,6 +25,27 @@ export async function POST(req: Request) {
     return Response.json({ error: "Movie and city are required" }, { status: 400 })
   }
 
+  // Remote mode: the browser agent and in-memory state live on the VM broker,
+  // so Vercel proxies the whole SSE stream to it (preserves state across responses).
+  if (BROKER_URL) {
+    const headers: Record<string, string> = { "Content-Type": "application/json" }
+    if (BROKER_AUTH) headers["Authorization"] = `Bearer ${BROKER_AUTH}`
+    const upstream = await fetch(`${BROKER_URL}/api/agent/execute`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(input),
+    })
+    return new Response(upstream.body, {
+      status: upstream.status,
+      headers: {
+        "Content-Type": "text/event-stream",
+        "Cache-Control": "no-cache, no-transform",
+        Connection: "keep-alive",
+      },
+    })
+  }
+
+  // Local mode (default): unchanged in-process execution.
   const encoder = new TextEncoder()
 
   const stream = new ReadableStream({
